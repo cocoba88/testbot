@@ -67,4 +67,13 @@
 0.0.0.0 ad-host-backup-america.oss-us-west-1.aliyuncs.com
 0.0.0.0 api.bidmachine.io
 0.0.0.0 dr.huittmore.com
-
+0.0.0.0 gateway.unityads.unity3d.com
+0.0.0.0 events.mz.unity3d.com
+0.0.0.0 ms4.applovin.com
+0.0.0.0 auction-load.unityads.unity3d.com
+0.0.0.0 api.antibanads.com
+0.0.0.0 cdn2.inner-active.mobi
+0.0.0.0 wv.inner-active.mobi
+0.0.0.0 configv2.unityads.unity3d.com
+0.0.0.0 adscfg.togethermany.com
+0.0.0.0 sdk-api.maticooads.com

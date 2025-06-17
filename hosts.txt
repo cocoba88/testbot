@@ -21,6 +21,7 @@
 0.0.0.0 api.tradplusad.com
 0.0.0.0 api.vungle.com
 0.0.0.0 api16-access-sg.pangle-b.io
+0.0.0.0 api.onegg.site
 0.0.0.0 app-measurement.com
 0.0.0.0 attribution.appsflyer.com
 0.0.0.0 auction-unityads.unityads.unity3d.com
@@ -30,6 +31,7 @@
 0.0.0.0 config.unityads.unity3d.com
 0.0.0.0 data.ad-score.com
 0.0.0.0 data.flurry.com
+0.0.0.0 deapi.funsdata.com
 0.0.0.0 deua2-inapps.appsflyersdk.com
 0.0.0.0 deua2-launches.appsflyersdk.com
 0.0.0.0 event.togethermany.com
@@ -61,4 +63,8 @@
 0.0.0.0 vungle.com
 0.0.0.0 webview.unityads.unity3d.com
 0.0.0.0 z.moatads.com
+0.0.0.0 tr.acobt.tech
+0.0.0.0 ad-host-backup-america.oss-us-west-1.aliyuncs.com
+0.0.0.0 api.bidmachine.io
+0.0.0.0 dr.huittmore.com
 

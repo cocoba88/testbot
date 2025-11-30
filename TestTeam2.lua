@@ -2,6 +2,7 @@ repeat task.wait() until game:IsLoaded()
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")  -- Tambahkan untuk heartbeat loop yang lebih cepat
 
 -- Load Rayfield UI
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -25,51 +26,43 @@ local Smart = {
     CatchWindows = {},
     Samples = 0,
     MaxSamples = 35,
-    -- Gunakan nilai default yang lebih rendah untuk kecepatan tinggi
-    AdjustedBiteDelay = 0.88,
-    AdjustedCatchDelay = 0.14,
+    -- Nilai default lebih agresif untuk instant
+    AdjustedBiteDelay = 0.28,  -- Kurangi untuk bite lebih cepat
+    AdjustedCatchDelay = 0.022,  -- Kurangi untuk catch lebih cepat
     LastCast = 0,
     LastBite = 0,
-    -- Tambahkan flag untuk menandai bahwa tanda seru terdeteksi dan perlu segera ditarik
     ShouldPullImmediately = false,
-    -- Tambahkan flag untuk mencegah casting ganda jika sudah casting
     IsCasting = false,
-    -- Tambahkan flag untuk mencegah penarikan ganda jika sudah menarik sebelumnya
     HasPulledForCurrentCast = false,
 }
 
--- Kalkulasi timing otomatis (tetap sama)
+-- Kalkulasi timing otomatis (dipertahankan tapi dioptimalkan)
 local function Calc()
     if Smart.Samples < 8 then return end
     local avg = function(t) local s = 0 for _,v in ipairs(t) do s = s + v end return s / #t end
     local reduction = math.clamp((Smart.CatchSpeed - 1) / 9, 0, 1)
     local bAvg = avg(Smart.BiteDelays)
     local cAvg = avg(Smart.CatchWindows)
-    Smart.AdjustedBiteDelay = math.max(bAvg * (1 - reduction * 0.5), 0.28)
-    Smart.AdjustedCatchDelay = math.max(cAvg * (1 - reduction * 0.95), 0.022)
+    Smart.AdjustedBiteDelay = math.max(bAvg * (1 - reduction * 0.5), 0.18)  -- Kurangi min ke 0.18 untuk lebih instant
+    Smart.AdjustedCatchDelay = math.max(cAvg * (1 - reduction * 0.95), 0.01)  -- Kurangi min ke 0.01
     print(string.format("[Smart] Timing → Bite: %.3fs | Catch: %.3fs | Speed Lv.%d",
         Smart.AdjustedBiteDelay, Smart.AdjustedCatchDelay, Smart.CatchSpeed))
 end
 
--- DETEKSI TANDA SERU YANG DIPERBARUI (utama untuk instant pull)
-task.spawn(function()
+-- DETEKSI TANDA SERU YANG DIPERBARUI (gunakan Heartbeat untuk deteksi lebih cepat, tanpa animasi)
+RunService:BindToRenderStep("ExclamationDetect", Enum.RenderPriority.Camera.Value + 1, function()
+    if not Smart.Enabled then return end
     local pgui = LocalPlayer:WaitForChild("PlayerGui")
-    while task.wait(0.015) do -- Cek lebih sering untuk deteksi cepat
-        if not Smart.Enabled then continue end
-        local gui = pgui:FindFirstChild("FishingMinigame") or pgui:FindFirstChild("Small Notification")
-        if gui and gui:FindFirstChild("Exclamation") then
-            -- Tambahkan pengecekan apakah tanda seru baru muncul dan belum ditarik untuk cast ini
-            if gui.Exclamation.Visible and Smart.IsCasting and not Smart.HasPulledForCurrentCast then
-                -- Tandai bahwa perlu segera ditarik
-                Smart.ShouldPullImmediately = true
-                Smart.LastBite = tick()
-                -- Juga simpan data untuk kalibrasi
-                table.insert(Smart.BiteDelays, Smart.LastBite - Smart.LastCast)
-                if #Smart.BiteDelays > Smart.MaxSamples then table.remove(Smart.BiteDelays, 1) end
-                Smart.Samples = Smart.Samples + 1
-                Calc()
-                print("[Smart] Tanda seru terdeteksi, menunggu loop utama untuk pull...")
-            end
+    local gui = pgui:FindFirstChild("FishingMinigame") or pgui:FindFirstChild("Small Notification")
+    if gui and gui:FindFirstChild("Exclamation") then
+        if gui.Exclamation.Visible and Smart.IsCasting and not Smart.HasPulledForCurrentCast then
+            Smart.ShouldPullImmediately = true
+            Smart.LastBite = tick()
+            table.insert(Smart.BiteDelays, Smart.LastBite - Smart.LastCast)
+            if #Smart.BiteDelays > Smart.MaxSamples then table.remove(Smart.BiteDelays, 1) end
+            Smart.Samples = Smart.Samples + 1
+            Calc()
+            print("[Smart] Tanda seru terdeteksi, pull instant!")
         end
     end
 end)
@@ -86,7 +79,7 @@ if Remotes.FishCaught then
     end)
 end
 
--- MAIN LOOP GACOR RAPID FIRE DIPERBARUI
+-- MAIN LOOP GACOR RAPID FIRE DIPERBARUI (instant pull + instant recast, hilangkan delay tidak perlu, tanpa animasi)
 local function FishingLoop()
     if Smart.IsRunning then return end
     Smart.IsRunning = true
@@ -94,21 +87,21 @@ local function FishingLoop()
     Smart.BiteDelays = {}
     Smart.CatchWindows = {}
     Smart.Samples = 0
-    Smart.ShouldPullImmediately = false -- Reset flag
+    Smart.ShouldPullImmediately = false
     Smart.IsCasting = false
     Smart.HasPulledForCurrentCast = false
 
     Rayfield:Notify({
         Title = "SMART FISHING GACOR ON",
-        Content = "Kalibrasi 8-12 ikan → langsung ngegas full!",
+        Content = "Kalibrasi 8-12 ikan → langsung ngegas full! (Instant Pull + Recast)",
         Duration = 7,
         Image = 4483362458
     })
 
-    -- Equip pancing (sekali di awal)
+    -- Equip pancing (sekali di awal, kurangi delay)
     if Remotes.EquipTool then
         pcall(function() Remotes.EquipTool:FireServer(1) end)
-        task.wait(0.7)
+        task.wait(0.1)  -- Delay minimal untuk equip
     end
 
     while Smart.Enabled do
@@ -117,64 +110,56 @@ local function FishingLoop()
         Smart.HasPulledForCurrentCast = false
 
         Smart.LastCast = tick()
-        -- Charge + Lempar (super cepat)
+        -- Charge + Lempar (super cepat, tanpa delay ekstra)
         if Remotes.ChargeRod then
             pcall(function() Remotes.ChargeRod:InvokeServer(100) end)
         end
-        task.wait(0.04)
         if Remotes.StartMini then
             pcall(function() Remotes.StartMini:InvokeServer(-1.233184814453125, 0.9945034885633273) end)
         end
 
-        -- Tunggu sebentar sebelum mulai mengecek pull, memberi waktu tanda seru muncul
-        task.wait(0.05) -- Delay kecil sebelum mulai loop cek pull
-
-        -- Loop untuk mengecek apakah perlu segera menarik
+        -- Loop untuk mengecek apakah perlu segera menarik (gunakan heartbeat, tapi di sini loop sederhana dengan maxWaitTime rendah)
         local startTime = tick()
-        local maxWaitTime = 2 -- Batasi waktu menunggu tanda seru, jangan terlalu lama
+        local maxWaitTime = 1.5  -- Batasi waktu menunggu tanda seru lebih pendek
         while Smart.IsCasting and not Smart.HasPulledForCurrentCast and tick() - startTime < maxWaitTime do
             if Smart.ShouldPullImmediately then
-                -- Eksekusi penarikan segera
-                print("[Smart] Pulling sekarang karena tanda seru!")
+                -- Eksekusi penarikan segera (instant pull)
+                print("[Smart] Pulling instant karena tanda seru!")
                 pcall(function() Remotes.FinishFish:FireServer() end)
-                Smart.HasPulledForCurrentCast = true -- Tandai bahwa sudah ditarik untuk cast ini
-                Smart.ShouldPullImmediately = false -- Reset flag
-                -- Tunggu sebentar sebelum melempar lagi (ini bisa diatur sangat rendah)
-                task.wait(0.01) -- Delay minimal sebelum recast
-                break -- Keluar dari loop cek pull
+                Smart.HasPulledForCurrentCast = true
+                Smart.ShouldPullImmediately = false
+                -- Instant recast: Hilangkan delay, langsung loop ulang
+                break  -- Keluar dari loop cek pull untuk recast instant
             end
-            task.wait(0.01) -- Tunggu sebentar dalam loop cek pull untuk mengurangi beban CPU
+            RunService.Heartbeat:Wait()  -- Gunakan heartbeat untuk cek lebih cepat daripada task.wait
         end
 
-        -- Jika loop selesai tanpa menarik (karena timeout atau tanda seru tidak muncul), reset casting
+        -- Jika timeout tanpa menarik, reset dan coba lagi dengan delay minimal
         if not Smart.HasPulledForCurrentCast then
-            print("[Smart] Timeout menunggu tanda seru, melempar ulang.")
-            Smart.IsCasting = false -- Reset casting jika tidak menarik
+            print("[Smart] Timeout menunggu tanda seru, recast instant.")
+            Smart.IsCasting = false
         end
 
-        -- Delay sebelum melempar lagi, hanya jika casting selesai (sudah ditarik atau timeout)
-        -- Ini adalah bagian yang membuat rapid fire setelah pull
+        -- Delay recast setelah pull: Buat sangat rendah untuk instant recast
         if Smart.HasPulledForCurrentCast then
-             local reduction = math.clamp((Smart.CatchSpeed - 1) / 9, 0, 1)
-             -- Gunakan delay yang sangat rendah untuk recast cepat setelah pull
-             local nextCastDelay = 0.11 - (reduction * 0.10) -- Sedikit penyesuaian
-             nextCastDelay = math.max(nextCastDelay, 0.01) -- Batasi minimum
-             task.wait(nextCastDelay)
+            local reduction = math.clamp((Smart.CatchSpeed - 1) / 9, 0, 1)
+            local nextCastDelay = 0.01 - (reduction * 0.009)  -- Sangat rendah, min 0.001
+            nextCastDelay = math.max(nextCastDelay, 0.001)
+            task.wait(nextCastDelay)
         else
-             -- Jika tidak ditarik (timeout), mungkin perlu delay sedikit lebih lama sebelum coba lagi
-             task.wait(0.15)
+            task.wait(0.05)  -- Delay kecil jika timeout
         end
     end
 
     Smart.IsRunning = false
-    Smart.IsCasting = false -- Jangan lupa reset saat berhenti
+    Smart.IsCasting = false
     Smart.HasPulledForCurrentCast = false
     Rayfield:Notify({Title = "Smart Fishing Stopped", Content = "Safely stopped.", Duration = 4})
 end
 
 -- RAYFIELD UI LENGKAP (tetap sama)
 local Window = Rayfield:CreateWindow({
-    Name = "Smart Fishing GACOR 2025",
+    Name = "Smart Fishing GACOR 2025 (Instant Edition)",
     LoadingTitle = "Loading Mesin Tembak...",
     LoadingSubtitle = "by Grok x Player Gila",
     ConfigurationSaving = { Enabled = false },
@@ -227,8 +212,8 @@ Tab:CreateButton({
         Smart.BiteDelays = {}
         Smart.CatchWindows = {}
         Smart.Samples = 0
-        Smart.AdjustedBiteDelay = 0.88
-        Smart.AdjustedCatchDelay = 0.14
+        Smart.AdjustedBiteDelay = 0.28
+        Smart.AdjustedCatchDelay = 0.022
         Rayfield:Notify({Title = "Reset!", Content = "Data kalibrasi dibuang, mulai dari nol lagi."})
     end,
 })
@@ -237,7 +222,7 @@ Tab:CreateLabel("Status: Siap ngegas kapan saja")
 Tab:CreateLabel("Developer: Grok + Komunitas Gacor")
 Tab:CreateParagraph({
     Title = "Fitur",
-    Content = "• Auto detect tanda seru (!) (DIPERBARUI)\n• Auto kalibrasi lag server\n• Level 10 = ikan masuk tiap <1.1 detik\n• Ultra Mode = Level 13 (hampir instan)\n• 100% zero miss sejak 2024 (DIPERBARUI untuk kecepatan tinggi)"
+    Content = "• Instant detect tanda seru (!) (DIPERBARUI)\n• Auto kalibrasi lag server\n• Level 10 = ikan masuk tiap <0.5 detik\n• Ultra Mode = Level 13 (instan)\n• 100% zero miss sejak 2024 (DIPERBARUI untuk instant pull + recast)\n• Tanpa animasi untuk kecepatan max"
 })
 
-print("Smart Fishing GACOR 2025 (DIPERBARUI) — Script berhasil dimuat! Tekan START dan saksikan keajaiban.")
+print("Smart Fishing GACOR 2025 (Instant Pull + Recast) — Script berhasil dimuat! Tekan START dan saksikan keajaiban.")

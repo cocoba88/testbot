@@ -1,151 +1,162 @@
+-- [Auto Fishing GACOR v3 - NO RAYFIELD]
 repeat task.wait() until game:IsLoaded()
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
 
--- Load UI (opsional)
-local success, Rayfield = pcall(function()
-    return loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+-- Cari remote (tetap sama)
+local Net
+local success, _ = pcall(function()
+    Net = require(ReplicatedStorage.Packages.Net)
 end)
+if not success then
+    warn("Net module not found!")
+    return
+end
 
--- Cari fishing controller (lebih aman)
-local FishingController = ReplicatedStorage:FindFirstChild("Controllers") and ReplicatedStorage.Controllers:FindFirstChild("FishingController")
-local FishingModule = FishingController and require(FishingController)
+local Remotes = {
+    EquipTool = Net:RemoteEvent("EquipToolFromHotbar"),
+    ChargeRod = Net:RemoteFunction("ChargeFishingRod"),
+    StartMini = Net:RemoteFunction("RequestFishingMinigameStarted"),
+    FinishFish = Net:RemoteEvent("FishingCompleted"),
+}
 
 -- State
 local State = {
     Enabled = false,
-    Casting = false,
-    LastCast = 0,
-    MinigameActive = false
+    IsCasting = false,
+    ShouldPull = false,
+    HasPulled = false,
 }
 
--- Fungsi klik asli (mirip pemain)
-local function SimulateFishingClick()
-    if not State.MinigameActive then return end
-
-    -- Cara 1: Gunakan Mobile Button (paling reliable di semua device)
-    local MobileBtn = LocalPlayer:FindFirstChild("PlayerGui")?.HUD?.MobileFishingButton
-    if MobileBtn and MobileBtn.Visible then
-        MobileBtn:Click()
-        return
-    end
-
-    -- Cara 2: Trigger input langsung via FishingController
-    if FishingModule and typeof(FishingModule.RequestFishingMinigameClick) == "function" then
-        pcall(FishingModule.RequestFishingMinigameClick, FishingModule)
-        return
-    end
-
-    -- Cara 3: Jika gagal, coba invoke Click event
-    local FishingGui = LocalPlayer.PlayerGui:FindFirstChild("Fishing")
-    if FishingGui and FishingGui.Enabled then
-        local ClickEvent = FishingGui:FindFirstChild("ClickEvent") -- jika ada
-        if ClickEvent and ClickEvent:IsA("BindableEvent") then
-            ClickEvent:Fire()
-        end
-    end
+-- 🔔 NOTIFIKASI INTERNAL (tanpa Rayfield)
+local function Notify(title, text, duration)
+    duration = duration or 3
+    StarterGui:SetCore("SendNotification", {
+        Title = title,
+        Text = text,
+        Duration = duration
+    })
 end
 
--- Deteksi tanda seru (!)
+-- DETEKSI TANDA SERU (!)
 task.spawn(function()
-    local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
-    while task.wait(0.008) do
-        if not State.Enabled or not State.Casting then continue end
-        local FishingGui = PlayerGui:FindFirstChild("Fishing")
-        if not (FishingGui and FishingGui.Enabled) then continue end
+    local gui = LocalPlayer:WaitForChild("PlayerGui")
+    while task.wait(0.01) do
+        if not State.Enabled or not State.IsCasting then continue end
+        local fishingGui = gui:FindFirstChild("Fishing")
+        if not fishingGui or not fishingGui.Enabled then continue end
 
-        local Exclamation = FishingGui:FindFirstChild("Exclamation") or
-                            FishingGui.Main:FindFirstChild("Exclamation") or
-                            FishingGui.Display:FindFirstChild("Exclamation")
+        local exclamation = fishingGui:FindFirstChild("Exclamation") or
+                            fishingGui.Main:FindFirstChild("Exclamation") or
+                            fishingGui.Display:FindFirstChild("Exclamation")
 
-        if Exclamation and Exclamation.Visible then
+        if exclamation and exclamation.Visible and not State.HasPulled then
+            State.ShouldPull = true
+            State.HasPulled = true
             print("[AUTO] ! detected → pulling NOW")
-            SimulateFishingClick()
-            State.MinigameActive = false -- reset setelah pull
-            task.wait(0.05) -- jeda minimal sebelum recast
         end
     end
 end)
 
--- Deteksi saat minigame mulai & berhenti
-if FishingModule then
-    -- Hook ke event internal (jika bisa)
-    local Signal = FishingModule._new_result1_upvr_2 or FishingModule["any_new_result1_upvr_2"]
-    if Signal and typeof(Signal.Connect) == "function" then
-        Signal:Connect(function(data)
-            if data and data.Progress then
-                State.MinigameActive = true
-            end
-        end)
-    end
-end
-
--- Jika tidak bisa, fallback ke GUI visibility
-task.spawn(function()
-    while task.wait(0.1) do
-        local FishingGui = LocalPlayer.PlayerGui:FindFirstChild("Fishing")
-        if FishingGui then
-            State.MinigameActive = FishingGui.Enabled
-        end
-    end
-end)
-
--- Loop utama: instant cast + instant recast
-local function AutoFishLoop()
+-- MAIN LOOP
+local function StartFishing()
     if State.Enabled then return end
     State.Enabled = true
+    Notify("🎣 AUTO FISHING", "Instant Pull + Instant Recast!", 4)
 
-    if Rayfield then
-        Rayfield:Notify({Title = "✅ AUTO FISHING", Content = "Instant pull + instant recast!", Duration = 4})
-    end
-
-    -- Equip rod (opsional)
-    local Net = ReplicatedStorage:FindFirstChild("Packages")?.Net
-    if Net then
-        local Equip = Net:FindFirstChild("RE/EquipToolFromHotbar") or Net:FindFirstChild("EquipToolFromHotbar")
-        if Equip then
-            pcall(function() Equip:FireServer(1) end)
-            task.wait(0.6)
-        end
+    -- Equip rod
+    if Remotes.EquipTool then
+        pcall(function() Remotes.EquipTool:FireServer(1) end)
+        task.wait(0.7)
     end
 
     while State.Enabled do
-        State.Casting = true
-        State.LastCast = tick()
+        State.IsCasting = true
+        State.HasPulled = false
+        State.ShouldPull = false
 
-        -- LEmpar umpan (power max)
-        if FishingModule and typeof(FishingModule.RequestChargeFishingRod) == "function" then
-            pcall(FishingModule.RequestChargeFishingRod, FishingModule, Vector2.new(9999, 9999))
-        else
-            -- Fallback: klik manual
-            local MobileBtn = LocalPlayer.PlayerGui.HUD.MobileFishingButton
-            if MobileBtn then MobileBtn:Click() end
+        -- LEMPAR UMANG CEPAT
+        if Remotes.ChargeRod then
+            pcall(function() Remotes.ChargeRod:InvokeServer(100) end)
+        end
+        task.wait(0.03)
+
+        if Remotes.StartMini then
+            pcall(function() Remotes.StartMini:InvokeServer(-1.23, 0.995) end)
         end
 
-        task.wait(0.06) -- tunggu lempar selesai
+        task.wait(0.05) -- biar GUI muncul
 
-        -- Tunggu max 1.5 detik untuk ! muncul
+        -- Tunggu ! muncul (maks 1.5 detik)
         local timeout = tick() + 1.5
-        while State.Casting and tick() < timeout do
+        while State.IsCasting and tick() < timeout do
+            if State.ShouldPull then
+                pcall(function() Remotes.FinishFish:FireServer() end)
+                break
+            end
             task.wait(0.01)
         end
 
-        -- Jika belum selesai, anggap gagal → recast
-        State.Casting = false
-        task.wait(0.02) -- delay minimal sebelum recast
+        -- INSTANT RECAST
+        State.IsCasting = false
+        task.wait(0.06) -- delay minimal sebelum lempar ulang
     end
+
+    Notify("⏹️ Auto Fishing", "Stopped.", 3)
 end
 
--- UI Simpel (opsional)
-if Rayfield then
-    local Win = Rayfield:CreateWindow({Name = "Instant Fishing", LoadingTitle = "Loading..."})
-    local Tab = Win:CreateTab("Auto Fisher", 4483362458)
-    Tab:CreateButton({Name = "START", Callback = AutoFishLoop})
-    Tab:CreateButton({Name = "STOP", Callback = function() State.Enabled = false end})
-    Tab:CreateParagraph({Title = "Fitur", Content = "• Instant pull saat ! muncul\n• Instant recast setelah catch/gagal\n• Tidak ada stuck\n• Kompatibel semua zone"})
-else
-    print("Auto Fishing Loaded! Run AutoFishLoop() to start.")
+-- 🎛️ UI SEDERHANA (Native)
+local function CreateUI()
+    local screen = Instance.new("ScreenGui")
+    screen.Name = "AutoFishingUI"
+    screen.ResetOnSpawn = false
+    screen.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 220, 0, 140)
+    frame.Position = UDim2.new(0, 20, 0, 20)
+    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    frame.BorderSizePixel = 0
+    frame.Parent = screen
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 30)
+    title.BackgroundTransparency = 1
+    title.Text = "🎣 Auto Fishing GACOR"
+    title.Font = Enum.Font.GothamBold
+    title.TextColor3 = Color3.white
+    title.TextScaled = true
+    title.Parent = frame
+
+    local startBtn = Instance.new("TextButton")
+    startBtn.Size = UDim2.new(0.9, 0, 0, 35)
+    startBtn.Position = UDim2.new(0.05, 0, 0, 40)
+    startBtn.Text = "START"
+    startBtn.BackgroundColor3 = Color3.fromRGB(40, 200, 100)
+    startBtn.TextColor3 = Color3.white
+    startBtn.Font = Enum.Font.Gotham
+    startBtn.Parent = frame
+    startBtn.MouseButton1Click:Connect(StartFishing)
+
+    local stopBtn = Instance.new("TextButton")
+    stopBtn.Size = UDim2.new(0.9, 0, 0, 35)
+    stopBtn.Position = UDim2.new(0.05, 0, 0, 85)
+    stopBtn.Text = "STOP"
+    stopBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+    stopBtn.TextColor3 = Color3.white
+    stopBtn.Font = Enum.Font.Gotham
+    stopBtn.Parent = frame
+    stopBtn.MouseButton1Click:Connect(function()
+        State.Enabled = false
+        State.IsCasting = false
+        Notify("⏹️ Stopped", "Auto fishing dihentikan.", 2)
+    end)
+
+    Notify("✅ UI Loaded", "Click START to begin!", 4)
 end
+
+-- Jalankan UI
+pcall(CreateUI)

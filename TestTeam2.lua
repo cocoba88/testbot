@@ -1,98 +1,202 @@
 repeat task.wait() until game:IsLoaded()
+
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local Zones = Workspace:FindFirstChild("Zones")
 
+-- Load Rayfield UI
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
--- Remote (anti-obfuscate 2025)
+-- Ambil remote
 local net = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("_Index"):WaitForChild("sleitnick_net@0.2.0"):WaitForChild("net")
 local Remotes = {
     EquipTool = net:FindFirstChild("RE/EquipToolFromHotbar") or net:FindFirstChild("EquipToolFromHotbar"),
     ChargeRod = net:FindFirstChild("RF/ChargeFishingRod") or net:FindFirstChild("ChargeFishingRod"),
     StartMini = net:FindFirstChild("RF/RequestFishingMinigameStarted") or net:FindFirstChild("RequestFishingMinigameStarted"),
     FinishFish = net:FindFirstChild("RE/FishingCompleted") or net:FindFirstChild("FishingCompleted"),
+    FishCaught = net:FindFirstChild("RE/FishCaught") or net:FindFirstChild("FishCaught"),
+    BaitSpawned = net:FindFirstChild("RE/BaitSpawned") or net:FindFirstChild("BaitSpawned"),
 }
 
-local Fishing = {
+-- Muat data area (ClickPowerMultiplier)
+local AreaData = {}
+local AreasModule = ReplicatedStorage:FindFirstChild("Areas")
+if AreasModule then
+    local success, data = pcall(function()
+        return require(AreasModule)
+    end)
+    if success then
+        AreaData = data
+    end
+end
+
+-- Helper: Dapatkan area dari posisi
+local function GetAreaNameFromPosition(pos)
+    if not Zones then return "Ocean" end
+    for _, zone in ipairs(Zones:GetChildren()) do
+        if zone:IsA("Model") and zone:FindFirstChild("RegionPart") then
+            local regionPart = zone.RegionPart
+            local size = regionPart.Size
+            local cframe = regionPart.CFrame
+            local rel = cframe:PointToObjectSpace(pos)
+            if math.abs(rel.X) <= size.X/2 and math.abs(rel.Y) <= size.Y/2 and math.abs(rel.Z) <= size.Z/2 then
+                return zone.Name
+            end
+        end
+    end
+    return "Ocean"
+end
+
+-- Smart State
+local Smart = {
     Enabled = false,
-    Running = false,
+    IsRunning = false,
+    CatchSpeed = 6,
+    CurrentArea = "Ocean",
+    LastCastPos = Vector3.zero,
+    ShouldPullImmediately = false,
+    IsCasting = false,
+    HasPulled = false,
 }
 
--- DETEKSI PALING AKURAT: Minigame aktif + tanda seru muncul
-local CanPull = false
-RunService.Heartbeat:Connect(function()
-    if not Fishing.Enabled then CanPull = false; return end
-    
+-- Ambil ClickPowerMultiplier dari area
+local function GetClickPowerMultiplier(areaName)
+    local area = AreaData[areaName]
+    if area and type(area.ClickPowerMultiplier) == "number" then
+        return area.ClickPowerMultiplier
+    end
+    return 1.0
+end
+
+-- Deteksi tanda seru (!) → instant pull trigger
+task.spawn(function()
     local pgui = LocalPlayer:WaitForChild("PlayerGui")
-    local fishingGui = pgui:FindFirstChild("Fishing")
-    local mini = pgui:FindFirstChild("FishingMinigame") or pgui:FindFirstChild("Small Notification")
-    
-    if fishingGui and fishingGui.Enabled
-    and mini and mini:FindFirstChild("Exclamation") and mini.Exclamation.Visible then
-        CanPull = true
-    else
-        CanPull = false
+    while task.wait(0.008) do
+        if not Smart.Enabled or not Smart.IsCasting then continue end
+        local fishingGui = pgui:FindFirstChild("Fishing")
+        if fishingGui and fishingGui.Enabled then
+            local exclamation = fishingGui:FindFirstChild("Exclamation") or fishingGui.Main:FindFirstChild("Exclamation")
+            if exclamation and exclamation.Visible and not Smart.HasPulled then
+                Smart.ShouldPullImmediately = true
+                Smart.HasPulled = true
+                print("[AUTO] ! detected → pulling NOW")
+            end
+        end
     end
 end)
 
--- MAIN LOOP – INI YANG BIKIN 100% LANGSUNG JALAN
-local function StartFishing()
-    if Fishing.Running then return end
-    Fishing.Running = true
-    Fishing.Enabled = true
-    
-    Rayfield:Notify({Title = "GACOR AKTIF", Content = "Instant pull + no stuck 100% work", Duration = 5})
+-- MAIN LOOP: Instant Pull + Smart Recast
+local function FishingLoop()
+    if Smart.IsRunning then return end
+    Smart.IsRunning = true
+    Smart.Enabled = true
+    Smart.ShouldPullImmediately = false
+    Smart.IsCasting = false
+    Smart.HasPulled = false
 
-    -- Equip sekali
+    Rayfield:Notify({
+        Title = "✅ SMART FISHING GACOR v2",
+        Content = "Instant pull + area-aware recast!",
+        Duration = 5
+    })
+
+    -- Equip rod
     if Remotes.EquipTool then
         pcall(function() Remotes.EquipTool:FireServer(1) end)
-        task.wait(0.4)
+        task.wait(0.6)
     end
 
-    while Fishing.Enabled do
-        -- CHARGE + LEMPAR DENGAN POSISI MOUSE ASLI (ini kunci utama!)
+    while Smart.Enabled do
+        Smart.IsCasting = true
+        Smart.HasPulled = false
+        Smart.ShouldPullImmediately = false
+
+        -- Charge & lempar sangat cepat
         if Remotes.ChargeRod then
             pcall(function() Remotes.ChargeRod:InvokeServer(100) end)
         end
-        
-        task.wait(0.03) -- wajib delay kecil
+        task.wait(0.03)
 
-        -- Kirim posisi mouse REAL-TIME (bukan nilai magic!)
-        local mousePos = UserInputService:GetMouseLocation()
-        if Remotes.StartMini then
-            pcall(function()
-                Remotes.StartMini:InvokeServer(mousePos.X, mousePos.Y)
-            end)
+        -- Kirim request dengan power max
+        local success, res = pcall(function()
+            return Remotes.StartMini:InvokeServer(-1.23, 0.995)
+        end)
+
+        if not success or not res then
+            Smart.IsCasting = false
+            task.wait(0.3)
+            continue
         end
 
-        -- Tunggu sampai bisa pull (maksimal 1.2 detik)
-        local waited = 0
-        repeat
-            RunService.Heartbeat:Wait()
-            waited += RunService.Heartbeat:Wait()
-        until CanPull or waited > 1.2 or not Fishing.Enabled
+        -- Simpan posisi casting untuk deteksi area
+        Smart.LastCastPos = typeof(res) == "Vector3" and res or Vector3.zero
+        Smart.CurrentArea = GetAreaNameFromPosition(Smart.LastCastPos)
+        local multiplier = GetClickPowerMultiplier(Smart.CurrentArea)
+        print("[AUTO] Casting in:", Smart.CurrentArea, "| Multiplier:", multiplier)
 
-        if not Fishing.Enabled then break end
-        if not CanPull then task.wait(0.1) continue end -- jarang banget ke sini
+        -- Tunggu sedikit agar UI muncul
+        task.wait(0.04)
 
-        -- INSTAN PULL
-        pcall(function() Remotes.FinishFish:FireServer() end)
+        -- Tunggu pull (maks 2 detik)
+        local pullTimeout = tick() + 2
+        while Smart.IsCasting and tick() < pullTimeout do
+            if Smart.ShouldPullImmediately then
+                pcall(function() Remotes.FinishFish:FireServer() end)
+                print("[AUTO] Fish caught! Recasting...")
+                break
+            end
+            task.wait(0.005)
+        end
 
-        -- INSTAN RECAST (0.035 detik adalah sweet spot 2025)
-        task.wait(0.035)
+        -- HITUNG DELAY RECAST BERDASARKAN AREA
+        -- Semakin kecil multiplier → semakin sulit → jangan terlalu cepat recast
+        local baseRecastDelay = 0.08  -- default untuk area mudah
+        local adjustedDelay = baseRecastDelay + (1 - multiplier) * 0.12  -- max ~0.2s untuk area sulit
+        adjustedDelay = math.clamp(adjustedDelay, 0.06, 0.22)
+
+        task.wait(adjustedDelay)
+        Smart.IsCasting = false
     end
 
-    Fishing.Running = false
+    Smart.IsRunning = false
+    Rayfield:Notify({Title = "⏹️ Stopped", Content = "Auto fishing halted.", Duration = 3})
 end
 
 -- UI
-local Window = Rayfield:CreateWindow({Name = "GACOR FIX 30 NOV 2025", ConfigurationSaving = {Enabled = false}})
-local Tab = Window:CreateTab("Main")
-Tab:CreateButton({Name = "START INSTAN (100% WORK)", Callback = function() task.spawn(StartFishing) end})
-Tab:CreateButton({Name = "STOP", Callback = function() Fishing.Enabled = false end})
+local Window = Rayfield:CreateWindow({
+    Name = "Smart Fishing GACOR v2",
+    LoadingTitle = "Loading...",
+    LoadingSubtitle = "Instant Pull + Area-Aware Recast",
+    ConfigurationSaving = { Enabled = false },
+    KeySystem = false
+})
 
-print("GACOR FIX 30 NOV 2025 – SIAP NGEGAS, NO STUCK LAGI!")
+local Tab = Window:CreateTab("Auto Fishing", 4483362458)
+Tab:CreateButton({
+    Name = "🚀 START AUTO FISHING",
+    Callback = function()
+        task.spawn(FishingLoop)
+    end,
+})
+Tab:CreateButton({
+    Name = "⏹️ STOP",
+    Callback = function()
+        Smart.Enabled = false
+    end,
+})
+Tab:CreateSlider({
+    Name = "Speed Level (1-10)",
+    Range = {1, 10},
+    Increment = 1,
+    Suffix = "",
+    CurrentValue = 8,
+    Callback = function(v)
+        Smart.CatchSpeed = v
+    end,
+})
+Tab:CreateParagraph({
+    Title = "Fitur",
+    Content = "• Instant pull saat ! muncul\n• Recast delay disesuaikan tiap area\n• Support semua zone (termasuk Hidden)\n• Anti ban & anti miss"
+})

@@ -30,8 +30,6 @@ local Smart = {
     AdjustedCatchDelay = 0.14, -- Waktu rata-rata dari gigitan ke pull sukses (latency + reaction)
     LastCast = 0,
     LastBite = 0,
-    -- Flag untuk menandai bahwa tanda seru terdeteksi dan perlu segera ditarik
-    ShouldPullImmediately = false,
     -- Flag untuk mencegah casting ganda jika sudah casting
     IsCasting = false,
     -- Flag untuk mencegah penarikan ganda jika sudah menarik sebelumnya
@@ -78,42 +76,53 @@ local function InstantPull()
     
     if success then
         Smart.HasPulledForCurrentCast = true -- Tandai bahwa sudah ditarik untuk cast ini
-        Smart.ShouldPullImmediately = false -- Reset flag
         Smart.IsWaitingForBite = false -- Hentikan penantian
     else
         print("[Smart ERROR] Gagal FireServer FinishFish: " .. tostring(result))
     end
 end
 
--- DETEKSI TANDA SERU YANG DIPERBARUI (lebih responsif dan langsung pull)
+-- DETEKSI TANDA SERU YANG DIPERBARUI (Fokus pada deteksi GUI yang lebih robust)
 task.spawn(function()
     local pgui = LocalPlayer:WaitForChild("PlayerGui")
     while task.wait(0.005) do -- Cek SANGAT sering untuk deteksi ultra cepat
         if not Smart.Enabled or not Smart.IsWaitingForBite or Smart.HasPulledForCurrentCast then continue end
         
-        -- Cek GUI Tanda Seru
-        local gui = pgui:FindFirstChild("FishingMinigame") or pgui:FindFirstChild("Small Notification")
-        if gui and gui:FindFirstChild("Exclamation") then
-            local exclamation = gui.Exclamation
-            
-            if exclamation.Visible and Smart.IsCasting then
-                -- Simpan data gigitan SEBELUM pull
-                Smart.LastBite = tick()
-                table.insert(Smart.BiteDelays, Smart.LastBite - Smart.LastCast)
-                if #Smart.BiteDelays > Smart.MaxSamples then table.remove(Smart.BiteDelays, 1) end
-                Smart.Samples = Smart.Samples + 1
-                
-                -- Eksekusi pull langsung di thread ini untuk latensi minimal
-                InstantPull()
-                
-                -- Lakukan kalibrasi setelah pull
-                Calc()
+        -- Logika deteksi yang lebih robust: Cari "Exclamation" di dalam FishingMinigame atau Small Notification
+        local exclamation = nil
+        
+        -- Cari di FishingMinigame
+        local fishingGui = pgui:FindFirstChild("FishingMinigame")
+        if fishingGui then
+            exclamation = fishingGui:FindFirstChild("Exclamation")
+        end
+        
+        -- Jika tidak ketemu, coba cari di Small Notification
+        if not exclamation then
+            local notificationGui = pgui:FindFirstChild("Small Notification")
+            if notificationGui then
+                exclamation = notificationGui:FindFirstChild("Exclamation")
             end
+        end
+        
+        -- Pengecekan akhir
+        if exclamation and exclamation:IsA("GuiObject") and exclamation.Visible and Smart.IsCasting then
+            -- Simpan data gigitan SEBELUM pull
+            Smart.LastBite = tick()
+            table.insert(Smart.BiteDelays, Smart.LastBite - Smart.LastCast)
+            if #Smart.BiteDelays > Smart.MaxSamples then table.remove(Smart.BiteDelays, 1) end
+            Smart.Samples = Smart.Samples + 1
+            
+            -- Eksekusi pull langsung di thread ini untuk latensi minimal
+            InstantPull()
+            
+            -- Lakukan kalibrasi setelah pull
+            Calc()
         end
     end
 end)
 
--- Deteksi ikan masuk inventory (untuk kalibrasi catch window - DIPERBARUI)
+-- Deteksi ikan masuk inventory (untuk kalibrasi catch window - tetap sama)
 if Remotes.FishCaught then
     Remotes.FishCaught.OnClientEvent:Connect(function()
         if Smart.Enabled and Smart.LastBite > 0 and Smart.HasPulledForCurrentCast then
@@ -139,7 +148,6 @@ local function FishingLoop()
     Smart.BiteDelays = {}
     Smart.CatchWindows = {}
     Smart.Samples = 0
-    Smart.ShouldPullImmediately = false
     Smart.IsCasting = false
     Smart.HasPulledForCurrentCast = false
     Smart.IsWaitingForBite = false
@@ -276,7 +284,6 @@ Tab:CreateButton({
 })
 Tab:CreateSection("Status")
 Tab:CreateLabel("Status: Siap ngegas kapan saja")
-Tab:CreateLabel(string.format("Pull Delay Kalibrasi: %d ms", Smart.PullDelayMS))
 Tab:CreateLabel("Developer: Grok + Komunitas Gacor")
 Tab:CreateParagraph({
     Title = "Fitur",

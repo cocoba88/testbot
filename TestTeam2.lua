@@ -25,9 +25,9 @@ local Smart = {
     CatchWindows = {},
     Samples = 0,
     MaxSamples = 35,
-    -- Gunakan nilai default yang lebih rendah untuk kecepatan tinggi
-    AdjustedBiteDelay = 0.88,
-    AdjustedCatchDelay = 0.14,
+    -- Nilai kalibrasi utama (akan dihitung otomatis)
+    AdjustedBiteDelay = 0.88, -- Waktu rata-rata dari cast ke gigitan
+    AdjustedCatchDelay = 0.14, -- Waktu rata-rata dari gigitan ke pull sukses (latency + reaction)
     LastCast = 0,
     LastBite = 0,
     -- Flag untuk menandai bahwa tanda seru terdeteksi dan perlu segera ditarik
@@ -38,69 +38,95 @@ local Smart = {
     HasPulledForCurrentCast = false,
     -- Tambahan: Flag untuk menandai bahwa kita sedang menunggu tanda seru
     IsWaitingForBite = false,
+    -- Tambahan: Waktu tunggu minimal sebelum pull setelah tanda seru (untuk mengatasi race condition server)
+    PullDelayMS = 0, -- Akan dikalibrasi dalam milidetik
 }
 
--- Kalkulasi timing otomatis (tetap sama)
+-- Kalkulasi timing otomatis (DIPERBARUI untuk akurasi milidetik)
 local function Calc()
     if Smart.Samples < 8 then return end
     local avg = function(t) local s = 0 for _,v in ipairs(t) do s = s + v end return s / #t end
     local reduction = math.clamp((Smart.CatchSpeed - 1) / 9, 0, 1)
+    
     local bAvg = avg(Smart.BiteDelays)
     local cAvg = avg(Smart.CatchWindows)
+    
+    -- Hitung ulang AdjustedBiteDelay dan AdjustedCatchDelay
     Smart.AdjustedBiteDelay = math.max(bAvg * (1 - reduction * 0.5), 0.28)
     Smart.AdjustedCatchDelay = math.max(cAvg * (1 - reduction * 0.95), 0.022)
-    print(string.format("[Smart] Timing → Bite: %.3fs | Catch: %.3fs | Speed Lv.%d",
-        Smart.AdjustedBiteDelay, Smart.AdjustedCatchDelay, Smart.CatchSpeed))
+    
+    -- Kalibrasi PullDelayMS: Gunakan rata-rata CatchWindow (latency) sebagai delay minimal
+    -- Ini adalah nilai yang dicari untuk mengatasi race condition server
+    Smart.PullDelayMS = math.floor(Smart.AdjustedCatchDelay * 1000)
+    
+    print(string.format("[Smart] Timing → Bite: %.3fs | Catch: %.3fs | Speed Lv.%d | PullDelay: %dms",
+        Smart.AdjustedBiteDelay, Smart.AdjustedCatchDelay, Smart.CatchSpeed, Smart.PullDelayMS))
 end
 
--- FUNGSI INSTANT PULL
+-- FUNGSI INSTANT PULL (DIPERBAIKI)
 local function InstantPull()
     if Smart.HasPulledForCurrentCast then return end
     
-    print("[Smart] PULL INSTAN! Tanda seru terdeteksi.")
-    pcall(function() Remotes.FinishFish:FireServer() end)
+    -- Tunggu PullDelayMS yang sudah dikalibrasi untuk memastikan server siap menerima FinishFish
+    local delay_sec = Smart.PullDelayMS / 1000
+    if delay_sec > 0 then
+        task.wait(delay_sec)
+    end
     
-    Smart.HasPulledForCurrentCast = true -- Tandai bahwa sudah ditarik untuk cast ini
-    Smart.ShouldPullImmediately = false -- Reset flag
-    Smart.IsWaitingForBite = false -- Hentikan penantian
+    print(string.format("[Smart] PULL INSTAN! Tanda seru terdeteksi. Delay: %.3f s", delay_sec))
+    local success, result = pcall(function() Remotes.FinishFish:FireServer() end)
     
-    -- Tunggu sebentar untuk memastikan server memproses pull sebelum recast
-    task.wait(0.01) 
+    if success then
+        Smart.HasPulledForCurrentCast = true -- Tandai bahwa sudah ditarik untuk cast ini
+        Smart.ShouldPullImmediately = false -- Reset flag
+        Smart.IsWaitingForBite = false -- Hentikan penantian
+    else
+        print("[Smart ERROR] Gagal FireServer FinishFish: " .. tostring(result))
+    end
 end
 
--- DETEKSI TANDA SERU YANG DIPERBARUI (lebih responsif)
+-- DETEKSI TANDA SERU YANG DIPERBARUI (lebih responsif dan langsung pull)
 task.spawn(function()
     local pgui = LocalPlayer:WaitForChild("PlayerGui")
     while task.wait(0.005) do -- Cek SANGAT sering untuk deteksi ultra cepat
-        if not Smart.Enabled or not Smart.IsWaitingForBite then continue end
+        if not Smart.Enabled or not Smart.IsWaitingForBite or Smart.HasPulledForCurrentCast then continue end
         
+        -- Cek GUI Tanda Seru
         local gui = pgui:FindFirstChild("FishingMinigame") or pgui:FindFirstChild("Small Notification")
         if gui and gui:FindFirstChild("Exclamation") then
             local exclamation = gui.Exclamation
-            -- Pengecekan apakah tanda seru baru muncul dan belum ditarik untuk cast ini
-            if exclamation.Visible and Smart.IsCasting and not Smart.HasPulledForCurrentCast then
-                -- Eksekusi pull langsung di thread ini untuk latensi minimal
-                InstantPull()
-                
-                -- Simpan data untuk kalibrasi
+            
+            if exclamation.Visible and Smart.IsCasting then
+                -- Simpan data gigitan SEBELUM pull
                 Smart.LastBite = tick()
                 table.insert(Smart.BiteDelays, Smart.LastBite - Smart.LastCast)
                 if #Smart.BiteDelays > Smart.MaxSamples then table.remove(Smart.BiteDelays, 1) end
                 Smart.Samples = Smart.Samples + 1
+                
+                -- Eksekusi pull langsung di thread ini untuk latensi minimal
+                InstantPull()
+                
+                -- Lakukan kalibrasi setelah pull
                 Calc()
             end
         end
     end
 end)
 
--- Deteksi ikan masuk inventory (untuk kalibrasi catch window - tetap sama)
+-- Deteksi ikan masuk inventory (untuk kalibrasi catch window - DIPERBARUI)
 if Remotes.FishCaught then
     Remotes.FishCaught.OnClientEvent:Connect(function()
-        if Smart.Enabled and Smart.LastBite > 0 then
+        if Smart.Enabled and Smart.LastBite > 0 and Smart.HasPulledForCurrentCast then
+            -- Hitung waktu dari gigitan (LastBite) sampai ikan tercatat (FishCaught)
             local window = tick() - Smart.LastBite
             table.insert(Smart.CatchWindows, window)
             if #Smart.CatchWindows > Smart.MaxSamples then table.remove(Smart.CatchWindows, 1) end
+            
+            -- Recalculate PullDelayMS based on new successful catch data
             Calc()
+            
+            -- Reset LastBite agar tidak dihitung ganda
+            Smart.LastBite = 0
         end
     end)
 end
@@ -113,14 +139,14 @@ local function FishingLoop()
     Smart.BiteDelays = {}
     Smart.CatchWindows = {}
     Smart.Samples = 0
-    Smart.ShouldPullImmediately = false -- Reset flag
+    Smart.ShouldPullImmediately = false
     Smart.IsCasting = false
     Smart.HasPulledForCurrentCast = false
     Smart.IsWaitingForBite = false
 
     Rayfield:Notify({
         Title = "SMART FISHING GACOR ON",
-        Content = "Instant Pull + Recast Aktif! Kalibrasi 8-12 ikan → langsung ngegas full!",
+        Content = "Instant Pull + Smart Timing Aktif! Kalibrasi 8-12 ikan → langsung ngegas full!",
         Duration = 7,
         Image = 4483362458
     })
@@ -138,6 +164,7 @@ local function FishingLoop()
         Smart.IsWaitingForBite = true -- Mulai menunggu gigitan
 
         Smart.LastCast = tick()
+        
         -- Charge + Lempar (super cepat)
         if Remotes.ChargeRod then
             pcall(function() Remotes.ChargeRod:InvokeServer(100) end)
@@ -153,8 +180,9 @@ local function FishingLoop()
         local maxWaitTime = 30 -- Waktu tunggu yang lebih lama jika tidak ada gigitan
         
         -- Tunggu hingga ditarik (oleh thread deteksi) atau timeout
+        -- Menggunakan task.wait(0.1) agar tidak membebani CPU
         while Smart.IsCasting and not Smart.HasPulledForCurrentCast and tick() - startTime < maxWaitTime do
-            task.wait(0.1) -- Cukup menunggu di sini, deteksi dilakukan di thread lain
+            task.wait(0.1) 
         end
         
         Smart.IsWaitingForBite = false -- Selesai menunggu gigitan
@@ -218,6 +246,7 @@ Tab:CreateSlider({
         Smart.CatchSpeed = v
         local msg = v == 10 and "MESIN TEMBAK AKTIF!" or ("Level " .. v)
         Rayfield:Notify({Title = "Speed: Level " .. v, Content = msg, Duration = 3.5})
+        Calc() -- Hitung ulang kalibrasi saat speed diubah
     end,
 })
 Tab:CreateToggle({
@@ -230,6 +259,7 @@ Tab:CreateToggle({
         else
             Smart.CatchSpeed = 10
         end
+        Calc() -- Hitung ulang kalibrasi saat mode diubah
     end,
 })
 Tab:CreateButton({
@@ -240,15 +270,17 @@ Tab:CreateButton({
         Smart.Samples = 0
         Smart.AdjustedBiteDelay = 0.88
         Smart.AdjustedCatchDelay = 0.14
+        Smart.PullDelayMS = 0
         Rayfield:Notify({Title = "Reset!", Content = "Data kalibrasi dibuang, mulai dari nol lagi."})
     end,
 })
 Tab:CreateSection("Status")
 Tab:CreateLabel("Status: Siap ngegas kapan saja")
+Tab:CreateLabel(string.format("Pull Delay Kalibrasi: %d ms", Smart.PullDelayMS))
 Tab:CreateLabel("Developer: Grok + Komunitas Gacor")
 Tab:CreateParagraph({
     Title = "Fitur",
-    Content = "• Auto detect tanda seru (!) (INSTANT PULL)\n• Auto kalibrasi lag server\n• Level 10 = ikan masuk tiap <1.1 detik\n• Ultra Mode = Level 13 (hampir instan)\n• 100% zero miss sejak 2024 (DIPERBARUI untuk kecepatan tinggi)"
+    Content = "• Auto detect tanda seru (!) (INSTANT PULL FIX)\n• Auto kalibrasi lag server (SMART TIMING)\n• Level 10 = ikan masuk tiap <1.1 detik\n• Ultra Mode = Level 13 (hampir instan)\n• 100% zero miss sejak 2024 (DIPERBARUI untuk kecepatan tinggi)"
 })
 
-print("Smart Fishing GACOR 2025 (INSTANT PULL + RECAST) — Script berhasil dimuat! Tekan START dan saksikan keajaiban.")
+print("Smart Fishing GACOR 2025 (INSTANT PULL FIX + SMART TIMING) — Script berhasil dimuat! Tekan START dan saksikan keajaiban.")

@@ -185,7 +185,7 @@ local function FishingLoop()
 
         -- Tunggu sampai pull terjadi atau timeout
         local startTime = tick()
-        local maxWaitTime = 30 -- Waktu tunggu yang lebih lama jika tidak ada gigitan
+        local maxWaitTime = 5 -- Waktu tunggu yang lebih lama jika tidak ada gigitan
         
         -- Tunggu hingga ditarik (oleh thread deteksi) atau timeout
         -- Menggunakan task.wait(0.1) agar tidak membebani CPU

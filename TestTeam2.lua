@@ -3,7 +3,7 @@ local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Load Rayfield UI (Dikembalikan ke Rayfield karena WindUI bermasalah)
+-- Load Rayfield UI
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 -- Cari remote terbaru 2025 (anti-obfuscate)
@@ -63,50 +63,60 @@ end
 
 -- FUNGSI INSTANT PULL (DIPERBAIKI)
 local function InstantPull()
-    if Smart.HasPulledForCurrentCast then return end
+    if Smart.HasPulledForCurrentCast then 
+        print("[InstantPull] Dibatalkan: Sudah ditarik untuk cast ini.")
+        return 
+    end
     
     -- Tunggu PullDelayMS yang sudah dikalibrasi untuk memastikan server siap menerima FinishFish
     local delay_sec = Smart.PullDelayMS / 1000
     if delay_sec > 0 then
+        print(string.format("[InstantPull] Menunggu delay kalibrasi: %.3f s", delay_sec))
         task.wait(delay_sec)
     end
     
-    print(string.format("[Smart] PULL INSTAN! Tanda seru terdeteksi. Delay: %.3f s", delay_sec))
+    print(string.format("[InstantPull] Melakukan PULL INSTAN! Delay akhir: %.3f s", delay_sec))
     local success, result = pcall(function() Remotes.FinishFish:FireServer() end)
     
     if success then
         Smart.HasPulledForCurrentCast = true -- Tandai bahwa sudah ditarik untuk cast ini
         Smart.IsWaitingForBite = false -- Hentikan penantian
+        print("[InstantPull] PULL BERHASIL dikirim ke server.")
     else
         print("[Smart ERROR] Gagal FireServer FinishFish: " .. tostring(result))
     end
 end
 
--- DETEKSI TANDA SERU YANG DIPERBARUI (Fokus pada deteksi GUI yang lebih robust)
+-- Fungsi pencarian rekursif untuk menemukan tanda seru
+local function findExclamation(parent)
+    for _, child in ipairs(parent:GetChildren()) do
+        if child.Name == "Exclamation" and child:IsA("GuiObject") and child.Visible then
+            return child
+        end
+        -- Cek anak-anak dari anak (rekursif)
+        if child:IsA("GuiObject") or child:IsA("ScreenGui") then
+            local found = findExclamation(child)
+            if found then return found end
+        end
+    end
+    return nil
+end
+
+-- DETEKSI TANDA SERU YANG DIPERBARUI (Pencarian Rekursif)
 task.spawn(function()
     local pgui = LocalPlayer:WaitForChild("PlayerGui")
     while task.wait(0.005) do -- Cek SANGAT sering untuk deteksi ultra cepat
-        if not Smart.Enabled or not Smart.IsWaitingForBite or Smart.HasPulledForCurrentCast then continue end
+        if not Smart.Enabled then continue end
+        if not Smart.IsWaitingForBite then continue end
+        if Smart.HasPulledForCurrentCast then continue end
         
-        -- Logika deteksi yang lebih robust: Cari "Exclamation" di dalam FishingMinigame atau Small Notification
-        local exclamation = nil
-        
-        -- Cari di FishingMinigame
-        local fishingGui = pgui:FindFirstChild("FishingMinigame")
-        if fishingGui then
-            exclamation = fishingGui:FindFirstChild("Exclamation")
-        end
-        
-        -- Jika tidak ketemu, coba cari di Small Notification
-        if not exclamation then
-            local notificationGui = pgui:FindFirstChild("Small Notification")
-            if notificationGui then
-                exclamation = notificationGui:FindFirstChild("Exclamation")
-            end
-        end
+        -- Cari tanda seru di seluruh PlayerGui (lebih universal)
+        local exclamation = findExclamation(pgui)
         
         -- Pengecekan akhir
-        if exclamation and exclamation:IsA("GuiObject") and exclamation.Visible and Smart.IsCasting then
+        if exclamation and Smart.IsCasting then
+            print("[DETEKSI] Tanda seru (!) terdeteksi. Path: " .. exclamation:GetFullName())
+            
             -- Simpan data gigitan SEBELUM pull
             Smart.LastBite = tick()
             table.insert(Smart.BiteDelays, Smart.LastBite - Smart.LastCast)
@@ -126,6 +136,7 @@ end)
 if Remotes.FishCaught then
     Remotes.FishCaught.OnClientEvent:Connect(function()
         if Smart.Enabled and Smart.LastBite > 0 and Smart.HasPulledForCurrentCast then
+            print("[FishCaught] Ikan tertangkap. Melakukan kalibrasi CatchWindow.")
             -- Hitung waktu dari gigitan (LastBite) sampai ikan tercatat (FishCaught)
             local window = tick() - Smart.LastBite
             table.insert(Smart.CatchWindows, window)
@@ -166,6 +177,7 @@ local function FishingLoop()
     end
 
     while Smart.Enabled do
+        print("--- Memulai Cast Baru ---")
         -- Reset status cast sebelum melempar
         Smart.IsCasting = true
         Smart.HasPulledForCurrentCast = false
@@ -176,17 +188,20 @@ local function FishingLoop()
         -- Charge + Lempar (super cepat)
         if Remotes.ChargeRod then
             pcall(function() Remotes.ChargeRod:InvokeServer(100) end)
+            print("[Cast] Charge Rod: 100%")
         end
         task.wait(0.04)
         if Remotes.StartMini then
             -- Koordinat lemparan tetap sama
             pcall(function() Remotes.StartMini:InvokeServer(-1.233184814453125, 0.9945034885633273) end)
+            print("[Cast] Start MiniGame (Lempar Umpan)")
         end
 
         -- Tunggu sampai pull terjadi atau timeout
         local startTime = tick()
-        local maxWaitTime = 5 -- Waktu tunggu yang lebih lama jika tidak ada gigitan
+        local maxWaitTime = 30 -- Waktu tunggu yang lebih lama jika tidak ada gigitan
         
+        print(string.format("[Loop] Menunggu gigitan atau timeout (%d s)...", maxWaitTime))
         -- Tunggu hingga ditarik (oleh thread deteksi) atau timeout
         -- Menggunakan task.wait(0.1) agar tidak membebani CPU
         while Smart.IsCasting and not Smart.HasPulledForCurrentCast and tick() - startTime < maxWaitTime do
@@ -197,17 +212,19 @@ local function FishingLoop()
 
         -- Jika loop selesai tanpa menarik (karena timeout), reset casting
         if not Smart.HasPulledForCurrentCast then
-            print("[Smart] Timeout menunggu tanda seru, melempar ulang.")
+            print("[Loop] Timeout menunggu tanda seru, melempar ulang.")
             -- Panggil FinishFish untuk membatalkan cast yang sedang berjalan (jika ada)
             pcall(function() Remotes.FinishFish:FireServer() end)
             Smart.IsCasting = false -- Reset casting
             task.wait(0.5) -- Delay yang lebih lama jika timeout
         else
+            print("[Loop] Penarikan berhasil. Melakukan Instant Recast.")
             -- Recast Cepat (Instant Recast)
             local reduction = math.clamp((Smart.CatchSpeed - 1) / 9, 0, 1)
             -- Gunakan delay yang sangat rendah untuk recast cepat setelah pull
             local nextCastDelay = 0.11 - (reduction * 0.10) -- Sedikit penyesuaian
             nextCastDelay = math.max(nextCastDelay, 0.01) -- Batasi minimum
+            print(string.format("[Recast] Delay sebelum cast berikutnya: %.3f s", nextCastDelay))
             task.wait(nextCastDelay)
         end
     end
@@ -219,7 +236,7 @@ local function FishingLoop()
     Rayfield:Notify({Title = "Smart Fishing Stopped", Content = "Safely stopped.", Duration = 4})
 end
 
--- RAYFIELD UI LENGKAP (Dikembalikan)
+-- RAYFIELD UI LENGKAP
 local Window = Rayfield:CreateWindow({
     Name = "Smart Fishing GACOR 2025",
     LoadingTitle = "Loading Mesin Tembak...",
@@ -290,4 +307,4 @@ Tab:CreateParagraph({
     Content = "• Auto detect tanda seru (!) (INSTANT PULL FIX)\n• Auto kalibrasi lag server (SMART TIMING)\n• Level 10 = ikan masuk tiap <1.1 detik\n• Ultra Mode = Level 13 (hampir instan)\n• 100% zero miss sejak 2024 (DIPERBARUI untuk kecepatan tinggi)"
 })
 
-print("Smart Fishing GACOR 2025 (INSTANT PULL FIX + SMART TIMING + Rayfield) — Script berhasil dimuat! Tekan START dan saksikan keajaiban.")
+print("Smart Fishing GACOR 2025 (DIAGNOSA REKURSIF) — Script berhasil dimuat! Tekan START dan saksikan keajaiban.")
